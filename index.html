@@ -122,13 +122,168 @@ header{display:flex;align-items:center;justify-content:space-between;padding:0 2
 ::-webkit-scrollbar{width:3px;}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
 </style>
+<script>
+// ── MINIMAL SUPABASE CLIENT (inline, no external deps) ────
+const SUPA_URL = 'https://ectzcxxqaiokjomtuaxw.supabase.co';
+const SUPA_KEY = 'sb_publishable_G6JgPkRwWTpz9_YahI8Ang_qzSpQ8AH';
+
+const sb = {
+  _token: null,
+  _user: null,
+  _session: null,
+  _listeners: [],
+
+  async _req(path, method='GET', body=null, auth=false) {
+    const headers = {
+      'apikey': SUPA_KEY,
+      'Content-Type': 'application/json',
+    };
+    if (auth && this._token) headers['Authorization'] = 'Bearer ' + this._token;
+    const opts = { method, headers };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(SUPA_URL + path, opts);
+    const data = await res.json();
+    return { data, error: res.ok ? null : data };
+  },
+
+  auth: {
+    async getSession() {
+      const stored = localStorage.getItem('msv_session');
+      if (!stored) return { data: { session: null } };
+      try {
+        const session = JSON.parse(stored);
+        // Check expiry
+        if (session.expires_at && Date.now()/1000 > session.expires_at) {
+          localStorage.removeItem('msv_session');
+          return { data: { session: null } };
+        }
+        sb._token = session.access_token;
+        sb._user = session.user;
+        sb._session = session;
+        return { data: { session } };
+      } catch(e) { return { data: { session: null } }; }
+    },
+
+    async signInWithPassword({ email, password }) {
+      const res = await sb._req('/auth/v1/token?grant_type=password', 'POST', { email, password });
+      if (res.error) return { error: res.error };
+      sb._token = res.data.access_token;
+      sb._user = res.data.user;
+      sb._session = res.data;
+      localStorage.setItem('msv_session', JSON.stringify(res.data));
+      sb._listeners.forEach(fn => fn('SIGNED_IN', res.data));
+      return { data: res.data, error: null };
+    },
+
+    async signUp({ email, password }) {
+      const res = await sb._req('/auth/v1/signup', 'POST', { email, password });
+      if (res.error) return { error: res.error };
+      // If email confirmation off, auto sign in
+      if (res.data.access_token) {
+        sb._token = res.data.access_token;
+        sb._user = res.data.user;
+        sb._session = res.data;
+        localStorage.setItem('msv_session', JSON.stringify(res.data));
+        sb._listeners.forEach(fn => fn('SIGNED_IN', res.data));
+      }
+      return { data: res.data, error: null };
+    },
+
+    async signOut() {
+      await sb._req('/auth/v1/logout', 'POST', null, true);
+      sb._token = null; sb._user = null; sb._session = null;
+      localStorage.removeItem('msv_session');
+      sb._listeners.forEach(fn => fn('SIGNED_OUT', null));
+      return { error: null };
+    },
+
+    onAuthStateChange(fn) {
+      sb._listeners.push(fn);
+      return { data: { subscription: { unsubscribe: () => {} } } };
+    }
+  },
+
+  from(table) {
+    return new SBQuery(table);
+  }
+};
+
+class SBQuery {
+  constructor(table) {
+    this.table = table;
+    this._filters = [];
+    this._select = '*';
+    this._order = null;
+    this._limit = null;
+    this._single = false;
+    this._method = 'GET';
+    this._body = null;
+  }
+  select(s) { this._select = s; return this; }
+  eq(col, val) { this._filters.push(`${col}=eq.${val}`); return this; }
+  order(col, opts={}) { this._order = `${col}.${opts.ascending===false?'desc':'asc'}`; return this; }
+  limit(n) { this._limit = n; return this; }
+  single() { this._single = true; return this; }
+
+  async insert(data) { return this._mutate('POST', data); }
+  async upsert(data) {
+    const headers = {
+      'apikey': SUPA_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates',
+    };
+    if (sb._token) headers['Authorization'] = 'Bearer ' + sb._token;
+    const res = await fetch(`${SUPA_URL}/rest/v1/${this.table}`, {
+      method: 'POST', headers, body: JSON.stringify(data)
+    });
+    const d = await res.json();
+    return { data: d, error: res.ok ? null : d };
+  }
+
+  async _mutate(method, data) {
+    const headers = {
+      'apikey': SUPA_KEY,
+      'Content-Type': 'application/json',
+    };
+    if (sb._token) headers['Authorization'] = 'Bearer ' + sb._token;
+    const res = await fetch(`${SUPA_URL}/rest/v1/${this.table}`, {
+      method, headers, body: JSON.stringify(data)
+    });
+    const d = await res.json();
+    return { data: d, error: res.ok ? null : d };
+  }
+
+  async then(resolve) {
+    let url = `${SUPA_URL}/rest/v1/${this.table}?select=${encodeURIComponent(this._select)}`;
+    this._filters.forEach(f => url += '&' + f);
+    if (this._order) url += '&order=' + this._order;
+    if (this._limit) url += '&limit=' + this._limit;
+    const headers = { 'apikey': SUPA_KEY };
+    if (sb._token) headers['Authorization'] = 'Bearer ' + sb._token;
+    if (this._single) headers['Accept'] = 'application/vnd.pgrst.object+json';
+    try {
+      const res = await fetch(url, { headers });
+      const data = await res.json();
+      resolve({ data: res.ok ? data : null, error: res.ok ? null : data });
+    } catch(e) {
+      resolve({ data: null, error: { message: e.message } });
+    }
+  }
+}
+
+let currentUser = null;
+</script>
 </head>
 <body>
 <header>
   <div class="logo">MyStageView<span class="logo-sep">·</span><span class="logo-venue">Bluemax Theater Berlin</span></div>
   <div class="hright">
-    <button class="btn btn-ghost">Anmelden</button>
-    <button class="btn btn-gold">Konto erstellen</button>
+    <button class="btn btn-ghost" id="loginBtn" onclick="showAuthModal('login')">Anmelden</button>
+    <button class="btn btn-gold" id="registerBtn" onclick="showAuthModal('register')">Konto erstellen</button>
+  <div id="userMenu" style="display:none;align-items:center;gap:10px;">
+    <span style="font-size:12px;color:var(--text-muted);">Hi, <span id="userEmail" style="color:var(--gold)"></span></span>
+    <button class="btn btn-ghost" style="padding:5px 10px;" onclick="logoutUser()">Abmelden</button>
+  </div>
   </div>
 </header>
 <div class="venue-bar">
@@ -362,6 +517,138 @@ document.querySelectorAll('.modal-ov').forEach(o=>o.addEventListener('click',e=>
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
 
 document.addEventListener('DOMContentLoaded',init);
+
+// ── AUTH ──────────────────────────────────────────────────
+let authMode = 'login';
+
+async function initAuth() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) { currentUser = session.user; updateAuthUI(true); }
+  sb.auth.onAuthStateChange((event, session) => {
+    currentUser = session?.user ?? null;
+    updateAuthUI(!!currentUser);
+    if (event === 'SIGNED_IN') { closeAuthModal(); showToast('✓ Willkommen!'); }
+    if (event === 'SIGNED_OUT') showToast('Erfolgreich abgemeldet.');
+  });
+}
+
+function updateAuthUI(on) {
+  document.getElementById('loginBtn').style.display = on ? 'none' : '';
+  document.getElementById('registerBtn').style.display = on ? 'none' : '';
+  document.getElementById('userMenu').style.display = on ? 'flex' : 'none';
+  if (on && currentUser) document.getElementById('userEmail').textContent = currentUser.email.split('@')[0];
+}
+
+function showAuthModal(mode) {
+  authMode = mode || 'login';
+  _updateAuthLabels();
+  document.getElementById('authErr').style.display = 'none';
+  document.getElementById('authEmail').value = '';
+  document.getElementById('authPw').value = '';
+  document.getElementById('authModal').classList.add('open');
+  setTimeout(() => document.getElementById('authEmail').focus(), 150);
+}
+
+function closeAuthModal() { document.getElementById('authModal').classList.remove('open'); }
+
+function toggleAuth() {
+  authMode = authMode === 'login' ? 'register' : 'login';
+  _updateAuthLabels();
+}
+
+function _updateAuthLabels() {
+  const isL = authMode === 'login';
+  document.getElementById('authTitle').textContent = isL ? 'Anmelden' : 'Konto erstellen';
+  document.getElementById('authSub').textContent = isL ? 'Melde dich an um Bewertungen abzugeben' : 'Erstelle ein kostenloses Konto';
+  document.getElementById('authBtn').textContent = isL ? 'Anmelden' : 'Konto erstellen';
+  document.getElementById('authToggleTxt').textContent = isL ? 'Noch kein Konto?' : 'Bereits registriert?';
+  document.getElementById('authToggle').textContent = isL ? 'Jetzt registrieren' : 'Anmelden';
+  document.getElementById('authErr').style.display = 'none';
+}
+
+async function submitAuth() {
+  const email = document.getElementById('authEmail').value.trim();
+  const pw = document.getElementById('authPw').value;
+  const errEl = document.getElementById('authErr');
+  const btn = document.getElementById('authBtn');
+
+  if (!email || !pw) { showErr('Bitte E-Mail und Passwort eingeben'); return; }
+  if (pw.length < 6) { showErr('Passwort muss mindestens 6 Zeichen haben'); return; }
+
+  btn.textContent = '...';
+  btn.disabled = true;
+
+  const msgs = {
+    'Invalid login credentials': 'E-Mail oder Passwort falsch',
+    'Email not confirmed': 'Bitte bestätige zuerst deine E-Mail',
+    'User already registered': 'Diese E-Mail ist bereits registriert',
+    'Password should be at least 6 characters': 'Passwort zu kurz (min. 6 Zeichen)',
+  };
+
+  if (authMode === 'login') {
+    const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+    if (error) showErr(msgs[error.message] || error.message);
+  } else {
+    const { data, error } = await sb.auth.signUp({ email, password: pw });
+    if (error) {
+      showErr(msgs[error.message] || error.message);
+    } else if (!data.access_token) {
+      // Email confirmation required
+      errEl.style.color = 'var(--green)';
+      errEl.textContent = '✓ Fast fertig! Bitte bestätige deine E-Mail.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  btn.disabled = false;
+  btn.textContent = authMode === 'login' ? 'Anmelden' : 'Konto erstellen';
+}
+
+function showErr(msg) {
+  const e = document.getElementById('authErr');
+  e.style.color = '#c84c4c';
+  e.textContent = msg;
+  e.style.display = 'block';
+}
+
+async function logoutUser() { await sb.auth.signOut(); }
+
+// Override submitR to check auth first
+async function submitR() {
+  if (!currentUser) { showAuthModal('login'); return; }
+  closeModal();
+  showToast('✓ Bewertung gespeichert – vielen Dank!');
+}
+
+// Start auth on load
+window.addEventListener('load', initAuth);
+
 </script>
+
+<!-- AUTH MODAL -->
+<div class="modal-ov" id="authModal">
+  <div class="modal">
+    <button class="mc" onclick="closeAuthModal()">×</button>
+    <div class="mt" id="authTitle">Anmelden</div>
+    <div class="ms" id="authSub">Melde dich an um Bewertungen abzugeben</div>
+    <div class="fg">
+      <label class="fl">E-Mail</label>
+      <input id="authEmail" type="email" class="fta" style="min-height:0;height:38px;resize:none;" placeholder="deine@email.de">
+    </div>
+    <div class="fg">
+      <label class="fl">Passwort</label>
+      <input id="authPw" type="password" class="fta" style="min-height:0;height:38px;resize:none;" placeholder="Mindestens 6 Zeichen">
+    </div>
+    <div id="authErr" style="font-size:11px;margin-bottom:10px;display:none;"></div>
+    <div class="ma2">
+      <button class="btn btn-ghost" onclick="closeAuthModal()">Abbrechen</button>
+      <button class="btn btn-gold" id="authBtn" onclick="submitAuth()">Anmelden</button>
+    </div>
+    <div style="margin-top:14px;text-align:center;font-size:11px;color:var(--text-muted);">
+      <span id="authToggleTxt">Noch kein Konto?</span>
+      <button onclick="toggleAuth()" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:11px;font-family:Outfit,sans-serif;margin-left:4px;" id="authToggle">Jetzt registrieren</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
